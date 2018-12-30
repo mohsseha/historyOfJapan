@@ -62,7 +62,7 @@ func downloadAndSavePostUrls() {
 	//
 	// Parallelism can be controlled also by spawning fixed
 	// number of go routines.
-	c.Limit(&colly.LimitRule{DomainGlob: "*", Parallelism: 2})
+	assertNoErr(c.Limit(&colly.LimitRule{DomainGlob: "*", Parallelism: 2}), "c.limit")
 
 	// On every a element which has href attribute call callback
 	c.OnHTML(".post-navigation-inner .post-nav-prev a[href]", func(e *colly.HTMLElement) {
@@ -72,11 +72,11 @@ func downloadAndSavePostUrls() {
 		// Print link
 		fmt.Printf("key=%d,\t %q\n ", episodeKey, link)
 		// Visit link found on page on a new thread
-		e.Request.Visit(link)
+		assertNoErr(e.Request.Visit(link), "on appending a visit")
 	})
 
 	// Start scraping on last blog post
-	c.Visit(startUrl)
+	assertNoErr(c.Visit(startUrl), "visit error")
 	// Wait until threads are finished
 	c.Wait()
 
@@ -109,7 +109,8 @@ func processEpDataFromLocalCache(localFilename string) {
 	// On every a element which has href attribute call callback
 	c.OnHTML(".post-content [id^=attachment_]", func(e *colly.HTMLElement) {
 		var imgSrc = e.ChildAttr("img", "src")
-		var txtCaption = e.ChildAttr("img", "alt")
+		//var txtCaption = e.ChildAttr("img", "alt")
+		txtCaption := e.ChildText(".wp-caption-text")
 		//fmt.Printf("localFilename=%q img[src]=%q, caption=%q\n", localFilename, imgSrc, txtCaption)
 		downloadImageIfNotCached(imgSrc)
 		saveTxtToImage(imgSrc, txtCaption)
@@ -117,22 +118,25 @@ func processEpDataFromLocalCache(localFilename string) {
 	})
 
 	// Start scraping on last blog post
-	c.Visit(localUrl)
+	assertNoErr(c.Visit(localUrl), "an other visit error")
 	// Wait until threads are finished
 	c.Wait()
 }
 
 func fileThere(filename string) bool {
-	a, err := os.Stat(filename)
+	handle, err := os.Stat(filename)
 	if err != nil {
-		if !os.IsNotExist(err) {
+		if os.IsExist(err) {
 			return true
+		} else {
+			return false
 		}
 	}
-	if a.Size() > 0 {
+	if handle.Size() > 0 {
 		return true
+	} else {
+		return false
 	}
-	return false
 }
 
 func saveTxtToImage(url string, txt string) {
@@ -141,8 +145,8 @@ func saveTxtToImage(url string, txt string) {
 	if fileThere(txtFileName) {
 		return
 	} else {
-		fmt.Printf("creating caption file %q", txtFileName)
-		ioutil.WriteFile(txtFileName, []byte(txt), 0644)
+		fmt.Printf("creating caption file %q\n", txtFileName)
+		assertNoErr(ioutil.WriteFile(txtFileName, []byte(txt), 0644), "write error of text file")
 	}
 }
 
@@ -185,6 +189,13 @@ func localEpHtmlFNameFromEpNum(i int) string {
 
 func hash(text string) string {
 	algorithm := fnv.New32a()
-	algorithm.Write([]byte(text))
+	_, err := algorithm.Write([]byte(text))
+	assertNoErr(err, "hashing problem")
 	return fmt.Sprintf("%v", algorithm.Sum32())
+}
+
+func assertNoErr(err error, msg string) {
+	if err != nil {
+		fmt.Printf("ERROR! \n \t msg=%q \n err=%q\n\t stack trace=%d", msg, err, runtime.StartTrace())
+	}
 }

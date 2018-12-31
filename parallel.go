@@ -9,7 +9,9 @@ import (
 	"io/ioutil"
 	"net/http"
 	"os"
+	"os/exec"
 	"runtime"
+	"strconv"
 	"strings"
 )
 
@@ -106,15 +108,21 @@ func processEpDataFromLocalCache(localFilename string) {
 	localUrl := "file://" + localFilename
 	fmt.Printf("parsing file %q...\n", localUrl)
 
-	// On every a element which has href attribute call callback
+	//  for every post download the images and the captions:
 	c.OnHTML(".post-content [id^=attachment_]", func(e *colly.HTMLElement) {
 		var imgSrc = e.ChildAttr("img", "src")
 		//var txtCaption = e.ChildAttr("img", "alt")
 		txtCaption := e.ChildText(".wp-caption-text")
 		//fmt.Printf("localFilename=%q img[src]=%q, caption=%q\n", localFilename, imgSrc, txtCaption)
-		downloadImageIfNotCached(imgSrc)
+		downloadResourceIfNotCached(imgSrc)
 		saveTxtToImage(imgSrc, txtCaption)
 		// Visit link found on page on a new thread
+	})
+
+	// for every post download the audio:
+	c.OnHTML(".post-content [href$=mp3]", func(e *colly.HTMLElement) {
+		mp3Url := e.Attr("href")
+		downloadResourceIfNotCached(mp3Url)
 	})
 
 	// Start scraping on last blog post
@@ -158,7 +166,7 @@ func cleanUrlAndLocalHasFilename(url string) (string, string) {
 	return clearnedUrl, localFileName
 }
 
-func downloadImageIfNotCached(url string) {
+func downloadResourceIfNotCached(url string) {
 	clearnedUrl, outputFileName := cleanUrlAndLocalHasFilename(url)
 
 	if fileThere(outputFileName) {
@@ -198,4 +206,13 @@ func assertNoErr(err error, msg string) {
 	if err != nil {
 		fmt.Printf("ERROR! \n \t msg=%q \n err=%q\n\t stack trace=%d", msg, err, runtime.StartTrace())
 	}
+}
+
+func lenOfMp3InSecs(mp3Filename string) int {
+	cmdStr := fmt.Sprintf("ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 %s", mp3Filename)
+	out, err := exec.Command(cmdStr).Output()
+	assertNoErr(err, "problem execing ffprobe, not installed? ")
+	lenF, err := strconv.ParseFloat(string(out), 32)
+	assertNoErr(err, "could not parse return of ffprobe! for file !"+mp3Filename)
+	return int(lenF)
 }

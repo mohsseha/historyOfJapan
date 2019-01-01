@@ -15,46 +15,89 @@ import (
 	"strings"
 )
 
-const startUrl = "http://isaacmeyer.net/2018/12/episode-269-the-revolution-will-not-be-live/"
-const episodeNum = 269
+/*
+WARNING: episodes 67-123 seem to be missing from webpage. !!
+*/
+
+const seedUrl = "http://isaacmeyer.net/2013/03/timeline-and-glossary/"
 const workingFolder = "/Users/halmohssen/src/historyOfJapan/data/"
-const mapFileName = workingFolder + "urlMap"
+const mapFileName = workingFolder + "epMap"
 
+//
+type Episode struct {
+	Mp3Url      string
+	Url         string
+	_mp3LenChan chan int //"fake" private field, pretty sure this is not in the spirit of golang
+	Num         int
+	Description string
+	Images      []Image
+}
+
+func (ep Episode) calculateMp3Len() {
+	ep._mp3LenChan = make(chan int, 1)
+	ep._mp3LenChan <- lenOfMp3InSecs(ep.mp3LocalCache())
+}
+
+func (ep Episode) mp3Length() int {
+	if ep._mp3LenChan == nil {
+		panic(ep)
+	}
+	return <-ep._mp3LenChan
+}
+
+func (ep Episode) htmlFileName() string {
+	return workingFolder + fmt.Sprintf("%d.html", ep.Num)
+}
+
+type Image struct {
+	RawUrl  string
+	Caption string
+}
+
+func (img Image) clearnedUrl() string {
+	return strings.Split(img.RawUrl, "?")[0]
+}
+
+func (img Image) cacheFile() string {
+	return cacheFile(img.clearnedUrl())
+}
+
+func cacheFile(clearnedURL string) string {
+	b := strings.Split(clearnedURL, ".")
+	ext := "." + b[len(b)-1]
+	return workingFolder + hash(clearnedURL) + ext
+}
 func main() {
+	var epMap map[int]Episode //episode # -> full data of EP.
+
 	if !fileThere(mapFileName) {
-		downloadAndSavePostUrls()
+		walkAndSaveEpMapSkel()
 	}
 
-	urlMap := loadPostUrls()
-	fmt.Printf("loaded urlMap, size is %d", len(urlMap))
+	epMap = loadEpMap()
+	fmt.Println("loaded epMap, size is %d", len(epMap))
 
-	for ep, epUrl := range urlMap {
-		cacheEpFileName := localEpHtmlFNameFromEpNum(ep)
+	for num, ep := range epMap {
+		cacheEpFileName := ep.htmlFileName()
 		if !fileThere(cacheEpFileName) {
-			downloadURLandSaveLocally(epUrl, cacheEpFileName)
+			cacheResource(ep.Url, cacheEpFileName)
 		}
-		processEpDataFromLocalCache(cacheEpFileName)
+		ep.processEpDataFromLocalCache()
+		epMap[num] = ep //golang does not support change in place
 	}
+
 }
 
-func check(e error) {
-	if e != nil {
-		fmt.Println("wow we have an error! ")
-		fmt.Println(runtime.StartTrace())
-		panic(e)
-	}
-}
-
-func downloadAndSavePostUrls() {
+func walkAndSaveEpMapSkel() {
 	fmt.Println("WARNING: finding URLs for all episodes")
-	var urlMap = make(map[int]string)
-	var episodeKey = episodeNum
+	var epMap = make(map[int]Episode)
+	var epNum = 1
 
 	// Instantiate default collector
 	c := colly.NewCollector(
 		// MaxDepth is 2, so only the links on the scraped page
 		// and links on those pages are visited
-		colly.MaxDepth(268),
+		colly.MaxDepth(300),
 		colly.Async(true),
 	)
 
@@ -67,38 +110,28 @@ func downloadAndSavePostUrls() {
 	assertNoErr(c.Limit(&colly.LimitRule{DomainGlob: "*", Parallelism: 2}), "c.limit")
 
 	// On every a element which has href attribute call callback
-	c.OnHTML(".post-navigation-inner .post-nav-prev a[href]", func(e *colly.HTMLElement) {
-		link := e.Attr("href")
-		urlMap[episodeKey] = link
-		episodeKey--
-		// Print link
-		fmt.Printf("key=%d,\t %q\n ", episodeKey, link)
-		// Visit link found on page on a new thread
-		assertNoErr(e.Request.Visit(link), "on appending a visit")
+	c.OnHTML(".post-navigation-inner .post-nav-next a[title^=Next]", func(e *colly.HTMLElement) {
+		nextEpUrl := e.Attr("href")
+		newEp := Episode{Num: epNum, Url: nextEpUrl, Description: "PLACE_HOLDER", Images: make([]Image, 0, 5)}
+		epMap[epNum] = newEp
+		epNum++
+		// Print nextEpUrl
+		fmt.Printf("\tep=%+v\n", newEp)
+		// Visit nextEpUrl found on page on a new thread
+		assertNoErr(e.Request.Visit(nextEpUrl), "on appending a visit")
 	})
 
 	// Start scraping on last blog post
-	assertNoErr(c.Visit(startUrl), "visit error")
+	assertNoErr(c.Visit(seedUrl), "visit error")
 	// Wait until threads are finished
 	c.Wait()
-
-	bolB, _ := json.Marshal(urlMap)
-
+	bolB, _ := json.Marshal(epMap)
 	check(ioutil.WriteFile(mapFileName, bolB, 0644))
 
 }
 
-func loadPostUrls() map[int]string {
-	urlMap := make(map[int]string)
-	fileBytes, readError := ioutil.ReadFile(mapFileName)
-	check(readError)
-
-	unmartialError := json.Unmarshal(fileBytes, &urlMap)
-	check(unmartialError)
-	return urlMap
-}
-
-func processEpDataFromLocalCache(localFilename string) {
+func (ep *Episode) processEpDataFromLocalCache() {
+	localFilename := ep.htmlFileName()
 	//setup the html parsign engine; according to the colly example I have to do the next few lines for the magic to work
 	t := &http.Transport{}
 	t.RegisterProtocol("file", http.NewFileTransport(http.Dir("/")))
@@ -106,29 +139,53 @@ func processEpDataFromLocalCache(localFilename string) {
 	c.WithTransport(t)
 
 	localUrl := "file://" + localFilename
-	fmt.Printf("parsing file %q...\n", localUrl)
+	fmt.Printf("parsing %q...{\t", localUrl)
 
-	//  for every post download the images and the captions:
+	//  for every post download the Images and the captions:
 	c.OnHTML(".post-content [id^=attachment_]", func(e *colly.HTMLElement) {
 		var imgSrc = e.ChildAttr("img", "src")
 		//var txtCaption = e.ChildAttr("img", "alt")
 		txtCaption := e.ChildText(".wp-caption-text")
-		//fmt.Printf("localFilename=%q img[src]=%q, caption=%q\n", localFilename, imgSrc, txtCaption)
-		downloadResourceIfNotCached(imgSrc)
-		saveTxtToImage(imgSrc, txtCaption)
+		img := Image{RawUrl: imgSrc, Caption: txtCaption}
+		go cacheResource(img.clearnedUrl(), img.cacheFile())
 		// Visit link found on page on a new thread
+		ep.addImg(img)
+		//fmt.Printf("debugging length = %d raw =%+v",len(ep.Images),ep.Images)
 	})
 
 	// for every post download the audio:
 	c.OnHTML(".post-content [href$=mp3]", func(e *colly.HTMLElement) {
 		mp3Url := e.Attr("href")
-		downloadResourceIfNotCached(mp3Url)
+		ep.Mp3Url = mp3Url
+		cacheResource(ep.Mp3Url, ep.mp3LocalCache())
+		//go ep.calculateMp3Len()//return immediately; using channels to emulate futures.
+		ep.calculateMp3Len() //return immediately; using channels to emulate futures.
 	})
 
 	// Start scraping on last blog post
 	assertNoErr(c.Visit(localUrl), "an other visit error")
 	// Wait until threads are finished
 	c.Wait()
+	fmt.Println("\n\t} done")
+}
+
+func (ep Episode) mp3LocalCache() string {
+	return cacheFile(ep.Mp3Url)
+}
+
+func (ep *Episode) addImg(img Image) []Image {
+	ep.Images = append(ep.Images, img) //?what odd syntax ! https://stackoverflow.com/questions/18042439/go-append-to-slice-in-struct
+	return ep.Images
+}
+
+func loadEpMap() map[int]Episode {
+	urlMap := make(map[int]Episode)
+	fileBytes, readError := ioutil.ReadFile(mapFileName)
+	assertNoErr(readError, "could not read episode Map file")
+
+	unmartialError := json.Unmarshal(fileBytes, &urlMap)
+	assertNoErr(unmartialError, "could not parse Map file")
+	return urlMap
 }
 
 func fileThere(filename string) bool {
@@ -147,52 +204,25 @@ func fileThere(filename string) bool {
 	}
 }
 
-func saveTxtToImage(url string, txt string) {
-	_, outputFileName := cleanUrlAndLocalHasFilename(url)
-	txtFileName := outputFileName + ".txt"
-	if fileThere(txtFileName) {
-		return
-	} else {
-		fmt.Printf("creating caption file %q\n", txtFileName)
-		assertNoErr(ioutil.WriteFile(txtFileName, []byte(txt), 0644), "write error of text file")
-	}
-}
-
-func cleanUrlAndLocalHasFilename(url string) (string, string) {
-	clearnedUrl := strings.Split(url, "?")[0]
-	b := strings.Split(clearnedUrl, ".")
-	ext := "." + b[len(b)-1]
-	localFileName := workingFolder + hash(clearnedUrl) + ext
-	return clearnedUrl, localFileName
-}
-
-func downloadResourceIfNotCached(url string) {
-	clearnedUrl, outputFileName := cleanUrlAndLocalHasFilename(url)
-
-	if fileThere(outputFileName) {
+//only download a resource (image, file etc.) if the local cache does not exist
+//warning: does not check for validity of local cache, partial downloads will trick this function
+func cacheResource(url string, localCache string) {
+	if fileThere(localCache) {
 		//fmt.Println("debug: found ", outputFileName)
 		return
 	}
-	downloadURLandSaveLocally(clearnedUrl, outputFileName)
-}
-
-func downloadURLandSaveLocally(remoteCleanUrl string, localFilename string) {
-	fmt.Printf("WARNING could NOT find %q, downloading to %q !!!", remoteCleanUrl, localFilename)
+	fmt.Printf("%q NOT cached 😅, downloading to %q ... ", url, localCache)
 	// don't worry about errors
-	response, e := http.Get(remoteCleanUrl)
-	check(e)
-	defer response.Body.Close()
+	response, e := http.Get(url)
+	assertNoErr(e, "could not http.get "+url)
+	defer check(response.Body.Close())
 	//open a file for writing
-	file, err := os.Create(localFilename)
+	file, err := os.Create(localCache)
 	check(err)
 	// Use io.Copy to just dump the response body to the file. This supports huge files
 	_, err = io.Copy(file, response.Body)
 	check(err)
-	fmt.Println("downloaded " + remoteCleanUrl)
-}
-
-func localEpHtmlFNameFromEpNum(i int) string {
-	return workingFolder + fmt.Sprintf("%d.html", i)
+	fmt.Println("... done 🤗")
 }
 
 func hash(text string) string {
@@ -204,15 +234,22 @@ func hash(text string) string {
 
 func assertNoErr(err error, msg string) {
 	if err != nil {
-		fmt.Printf("ERROR! \n \t msg=%q \n err=%q\n\t stack trace=%d", msg, err, runtime.StartTrace())
+		fmt.Printf("\nERROR! \n \t msg=%q \n err=%q\n\t stack trace=%+v", msg, err, runtime.StartTrace())
+	}
+}
+
+func check(e error) {
+	if e != nil {
+		fmt.Println("wow we have an error! ")
+		fmt.Println(runtime.StartTrace())
+		panic(e)
 	}
 }
 
 func lenOfMp3InSecs(mp3Filename string) int {
-	cmdStr := fmt.Sprintf("ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 %s", mp3Filename)
-	out, err := exec.Command(cmdStr).Output()
+	out, err := exec.Command("ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", mp3Filename).Output()
 	assertNoErr(err, "problem execing ffprobe, not installed? ")
-	lenF, err := strconv.ParseFloat(string(out), 32)
+	lenF, err := strconv.ParseFloat(strings.Trim(string(out), "\n"), 32)
 	assertNoErr(err, "could not parse return of ffprobe! for file !"+mp3Filename)
 	return int(lenF)
 }

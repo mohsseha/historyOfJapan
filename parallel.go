@@ -20,29 +20,19 @@ WARNING: episodes 67-123 seem to be missing from webpage. !!
 */
 
 const seedUrl = "http://isaacmeyer.net/2013/03/timeline-and-glossary/"
+const coverUrl = "http://isaacmeyer.net/wp-content/uploads/2017/11/cropped-Untitled-design.jpg"
 const workingFolder = "/Users/halmohssen/src/historyOfJapan/data/"
+const outFolder = workingFolder + "out/"
 const mapFileName = workingFolder + "epMap"
 
 //
 type Episode struct {
 	Mp3Url      string
+	Mp3LenSecs  int
 	Url         string
-	_mp3LenChan chan int //"fake" private field, pretty sure this is not in the spirit of golang
 	Num         int
 	Description string
 	Images      []Image
-}
-
-func (ep Episode) calculateMp3Len() {
-	ep._mp3LenChan = make(chan int, 1)
-	ep._mp3LenChan <- lenOfMp3InSecs(ep.mp3LocalCache())
-}
-
-func (ep Episode) mp3Length() int {
-	if ep._mp3LenChan == nil {
-		panic(ep)
-	}
-	return <-ep._mp3LenChan
 }
 
 func (ep Episode) htmlFileName() string {
@@ -77,12 +67,15 @@ func main() {
 	epMap = loadEpMap()
 	fmt.Println("loaded epMap, size is %d", len(epMap))
 
+	cacheResource(coverUrl, cacheFile(coverUrl)) //shared for all episodes
+
 	for num, ep := range epMap {
 		cacheEpFileName := ep.htmlFileName()
 		if !fileThere(cacheEpFileName) {
 			cacheResource(ep.Url, cacheEpFileName)
 		}
 		ep.processEpDataFromLocalCache()
+		ep.writeVideoScript()
 		epMap[num] = ep //golang does not support change in place
 	}
 
@@ -158,8 +151,7 @@ func (ep *Episode) processEpDataFromLocalCache() {
 		mp3Url := e.Attr("href")
 		ep.Mp3Url = mp3Url
 		cacheResource(ep.Mp3Url, ep.mp3LocalCache())
-		//go ep.calculateMp3Len()//return immediately; using channels to emulate futures.
-		ep.calculateMp3Len() //return immediately; using channels to emulate futures.
+		ep.Mp3LenSecs = lenOfMp3InSecs(ep.mp3LocalCache())
 	})
 
 	// Start scraping on last blog post
@@ -176,6 +168,34 @@ func (ep Episode) mp3LocalCache() string {
 func (ep *Episode) addImg(img Image) []Image {
 	ep.Images = append(ep.Images, img) //?what odd syntax ! https://stackoverflow.com/questions/18042439/go-append-to-slice-in-struct
 	return ep.Images
+}
+
+// writes a script that if run will:
+//0. puts in a cover page
+//1. generate the caption images
+
+//-2. ends with a cover page
+//-1. generates an MP4 with the audio and images
+func (ep *Episode) writeVideoScript() {
+	covFile := cacheFile(coverUrl)
+	script := ""
+	script = script + fmt.Sprintf("#!/bin/bash\n") +
+		fmt.Sprintf("#\n") +
+		fmt.Sprintf("# MACHINE GENERATED SCRIPT DO NOT EDIT !\n") +
+		fmt.Sprintf("# THIS SCRIPT IS MEANT TO GENERATE A VIDEO FROM THE WEBPAGE %q\n", ep.Url) +
+		fmt.Sprintf("# \t the mp3 file %q\t is %d seconds long \n \t \t it is stored in %q \n", ep.Mp3Url, ep.Mp3LenSecs, ep.mp3LocalCache()) +
+		fmt.Sprintf("# coverFile %q\n", covFile) +
+		fmt.Sprintf("\n") +
+		fmt.Sprintf("\n") +
+		fmt.Sprintf("# mp3 file = %q\n", ep.mp3LocalCache())
+	for _, img := range ep.Images {
+		script += fmt.Sprintf("# img= %q\n", img.cacheFile())
+	}
+
+	epOutFolder := outFolder + strconv.Itoa(ep.Num) //+"/"
+	os.RemoveAll(epOutFolder)
+	assertNoErr(os.MkdirAll(epOutFolder, 0755), "can't create a folder")
+	assertNoErr(ioutil.WriteFile(epOutFolder+"/run.sh", []byte(script), 0755), "could not write a run.sh file!")
 }
 
 func loadEpMap() map[int]Episode {
@@ -215,7 +235,7 @@ func cacheResource(url string, localCache string) {
 	// don't worry about errors
 	response, e := http.Get(url)
 	assertNoErr(e, "could not http.get "+url)
-	defer check(response.Body.Close())
+	defer response.Body.Close()
 	//open a file for writing
 	file, err := os.Create(localCache)
 	check(err)

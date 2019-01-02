@@ -23,7 +23,7 @@ const seedUrl = "http://isaacmeyer.net/2013/03/timeline-and-glossary/"
 const coverUrl = "http://isaacmeyer.net/wp-content/uploads/2017/11/cropped-Untitled-design.jpg"
 const workingFolder = "/Users/halmohssen/src/historyOfJapan/data/"
 const outFolder = workingFolder + "out/"
-const mapFileName = workingFolder + "epMap"
+const mapFileName = workingFolder + "epMap.json"
 
 //
 type Episode struct {
@@ -177,22 +177,49 @@ func (ep *Episode) addImg(img Image) []Image {
 //-2. ends with a cover page
 //-1. generates an MP4 with the audio and images
 func (ep *Episode) writeVideoScript() {
+	epOutFolder := outFolder + strconv.Itoa(ep.Num) + "/"
 	covFile := cacheFile(coverUrl)
-	script := ""
-	script = script + fmt.Sprintf("#!/bin/bash\n") +
+	var videoImageList = make([]string, 0, 10)
+	videoImageList = append(videoImageList, covFile)
+	script := "#!/bin/bash\n"
+	script = script +
 		fmt.Sprintf("#\n") +
 		fmt.Sprintf("# MACHINE GENERATED SCRIPT DO NOT EDIT !\n") +
 		fmt.Sprintf("# THIS SCRIPT IS MEANT TO GENERATE A VIDEO FROM THE WEBPAGE %q\n", ep.Url) +
-		fmt.Sprintf("# \t the mp3 file %q\t is %d seconds long \n \t \t it is stored in %q \n", ep.Mp3Url, ep.Mp3LenSecs, ep.mp3LocalCache()) +
+		fmt.Sprintf("# \t the mp3 file %q\t is %d seconds long \n # \t \t it/**/ is stored in %q \n", ep.Mp3Url, ep.Mp3LenSecs, ep.mp3LocalCache()) +
 		fmt.Sprintf("# coverFile %q\n", covFile) +
 		fmt.Sprintf("\n") +
 		fmt.Sprintf("\n") +
 		fmt.Sprintf("# mp3 file = %q\n", ep.mp3LocalCache())
-	for _, img := range ep.Images {
-		script += fmt.Sprintf("# img= %q\n", img.cacheFile())
+	for _, img := range ep.Images { //generate caption images:
+		imgSrc := img.cacheFile()
+		imgDest := strings.Replace(imgSrc, "/data/", "/data/out/"+strconv.Itoa(ep.Num)+"/", -1)
+		//_, err := exec.Command("convert", "-background", "'#0008'","-fill","white","-gravity","center","-size","640x480",captionArg,imgSrc,"+swap","-resize","640x480","-gravity","south","-composite",imgDest).Output()
+		//assertNoErr(err,"could not run convert!")
+		videoImageList = append(videoImageList, imgSrc)
+		videoImageList = append(videoImageList, imgDest)
+		script += fmt.Sprintf("# Convert the imageimg= %q\n", img.cacheFile())
+		script += fmt.Sprintf("convert -background '#0008' -fill white -gravity center -size 640x480 caption:'%s' %s +swap -resize 640x480 -gravity south -composite %s\n\n", img.Caption, imgSrc, imgDest)
 	}
+	videoImageList = append(videoImageList, covFile)
+	videoImageList = append(videoImageList, covFile)
 
-	epOutFolder := outFolder + strconv.Itoa(ep.Num) //+"/"
+	script += "\n\n# and now the script that converts everything to a video using ffmpeg :\n"
+	// first calculate the duration of each frame:
+	var duration int
+	duration = ep.Mp3LenSecs / (len(videoImageList) + 1) //not sure about +1
+	//write the slide file:
+	script += fmt.Sprintf("cat <<EOF > %s\n", epOutFolder+"slides.txt")
+	for _, slideFile := range videoImageList {
+		script += fmt.Sprintf("file '%s'\n", slideFile)
+		script += "duration " + strconv.Itoa(duration) + "\n"
+	}
+	script += fmt.Sprintf("file '%s'\n", covFile)
+	script += "\nEOF\n\n\n"
+
+	script += "\n#finally the ffmpeg that does the work : \n"
+	script += fmt.Sprintf("ffmpeg -f concat -safe 0 -i %s -i %s -vf scale=640:480 %s\n", epOutFolder+"slides.txt", ep.mp3LocalCache(), epOutFolder+"out.mp4")
+
 	os.RemoveAll(epOutFolder)
 	assertNoErr(os.MkdirAll(epOutFolder, 0755), "can't create a folder")
 	assertNoErr(ioutil.WriteFile(epOutFolder+"/run.sh", []byte(script), 0755), "could not write a run.sh file!")
@@ -255,6 +282,7 @@ func hash(text string) string {
 func assertNoErr(err error, msg string) {
 	if err != nil {
 		fmt.Printf("\nERROR! \n \t msg=%q \n err=%q\n\t stack trace=%+v", msg, err, runtime.StartTrace())
+		panic("stopping")
 	}
 }
 

@@ -218,7 +218,7 @@ func (ep *Episode) writeVideoScript() {
 	script += "\nEOF\n\n\n"
 
 	script += "\n#finally the ffmpeg that does the work : \n"
-	script += fmt.Sprintf("ffmpeg -f concat -safe 0 -i %s -i %s -vf scale=640:480 %s\n", epOutFolder+"slides.txt", ep.mp3LocalCache(), epOutFolder+"out.mp4")
+	script += fmt.Sprintf("ffmpeg -f concat -safe 0 -i %s -i %s -vf scale=640:480 %s\n", epOutFolder+"slides.txt", ep.mp3LocalCache(), epOutFolder+"out.webm")
 
 	os.RemoveAll(epOutFolder)
 	assertNoErr(os.MkdirAll(epOutFolder, 0755), "can't create a folder")
